@@ -1,0 +1,417 @@
+---
+title: "graficos"
+format: html
+editor: source
+---
+
+```{r}
+library(tidyverse)
+library(purrr)
+library(gt)
+```
+
+```{r}
+model_results <- Sys.glob("23_05_26/*.Rds")
+```
+
+```{r}
+data_modelos <- purrr::map_dfr(model_results, function(x) {
+  m_df <- readRDS(x)
+  
+  if(length(m_df) >= 1) {
+    m_df <- m_df |> bind_rows()
+    m_df$source <- x
+  } else {
+    return(NULL)
+  }
+  
+  return(m_df)
+  
+  
+})  |> 
+  mutate(model_type = recode(model_type,
+                        "guassian" = "Guassian",
+                        "logit" = "Binomial",
+                        "pois" = "Poisson"
+          )
+    ) |> 
+    group_by( grid_idx) |> 
+    mutate(is_true_model =  (fixed_X_i == 1) & (rand_subj_id==1) & (!is.na(random_slope))) |> 
+    mutate(is_true_model_in_group = any(is_true_model) ) |> 
+  
+    mutate(is_true_model_bic = (bic == min(bic)) & is_true_model   ) |> 
+    mutate(is_true_model_aic = (aic == min(aic)) & is_true_model   ) |> 
+    mutate(is_true_model_aicc = (aicc == min(aicc)) & is_true_model   ) |> 
+  
+    mutate(is_true_model_diogenes_bic_without_params  = 
+             (diogenes_bic_without_params == min(diogenes_bic_without_params)) & is_true_model   ) |> 
+  
+    mutate(is_true_model_caif  = (caif == min(caif)) & is_true_model   ) |> 
+    mutate(is_true_model_icomp  = (icomp == min(icomp)) & is_true_model   ) |> 
+  
+  
+    mutate(is_true_model_bic_dio  = (bic_dio == min(bic_dio)) & is_true_model   ) |> 
+  
+  
+    ungroup() |> 
+    filter(is_true_model_in_group)  
+```
+
+
+```{r}
+data_modelos$is_true_model_diogenes_bic_without_params |> summary()
+```
+
+
+```{r}
+data_modelos$rep_id |> unique() |> sort()
+```
+
+```{r}
+get_fisher_test_per_row <- function(prop_greter, prop_lesser, n_data) {
+  
+  
+  table_matrix <- matrix(c(round(prop_greter*n_data), 
+                         round(prop_lesser*n_data),
+                         round((1-prop_greter)*n_data), 
+                         round((1-prop_lesser)*n_data)),
+                         nrow = 2,
+                         byrow=FALSE,
+                         dimnames = list(Guess = c("greter", "lesser"),
+                                         Truth = c("greter", "lesser")))
+  
+  
+  result_test <- fisher.test(table_matrix, alternative = "greater",
+                             simulate.p.value = TRUE)
+  
+  
+  return(result_test$p.value)
+  
+}
+
+get_fisher_test_per_row_vec <- Vectorize(get_fisher_test_per_row, SIMPLIFY = TRUE, USE.NAMES = FALSE)
+```
+
+
+
+```{r}
+data_simul_all_cases <- 
+data_modelos |> 
+  # group_by( grid_idx) |>
+  # mutate(total_models = n()) |> 
+  # ungroup() |> 
+  filter(is_true_model) |>
+  group_by(n_subj, n_ingroup, n_outgroup, model_type, rho) |>
+  summarise(`Accuracy BIC_HES SP` = mean(is_true_model_diogenes_bic_without_params, na.rm=T),
+            `Accuracy BIC_HES` = mean(is_true_model_bic_dio, na.rm=T),
+            `Accuracy BIC` = mean(is_true_model_bic, na.rm=T),
+            `Accuracy AIC` = mean(is_true_model_aic, na.rm=T),
+            `Accuracy AICc` = mean(is_true_model_aicc, na.rm=T),
+            `Accuracy CAIF` = mean(is_true_model_caif, na.rm=T),
+            `Accuracy ICOMP` = mean(is_true_model_icomp, na.rm=T),
+            n = n()
+            ) |>
+  ungroup() |> 
+  mutate(across(starts_with("Accuracy"), list(sd=function(x){ sqrt(x*(1-x)/n) })))  |> 
+  mutate(across(`Accuracy BIC`:`Accuracy ICOMP`,
+                list(p_value_HES = function(x) {
+                      get_fisher_test_per_row_vec(`Accuracy BIC_HES`,x, n)
+                      },
+                     p_value_HES_SP = function(x) {
+                      get_fisher_test_per_row_vec(`Accuracy BIC_HES SP`,x, n)
+                    }
+                )
+                ))
+ 
+
+  
+data_simul_all_cases_table <- data_simul_all_cases |> 
+  select(-matches("p_value")) |> 
+  mutate_if(is.numeric, function(x){round(x,2)}) |> 
+  mutate(BICDSP = str_glue("{`Accuracy BIC_HES SP`}({`Accuracy BIC_HES SP_sd`})") ) |> 
+  mutate(BICD = str_glue("{`Accuracy BIC_HES`}({`Accuracy BIC_HES_sd`})") ) |> 
+  mutate(BIC = str_glue("{`Accuracy BIC`}({`Accuracy BIC_sd`})") ) |> 
+  mutate(AIC = str_glue("{`Accuracy AIC`}({`Accuracy AIC_sd`})") ) |> 
+  mutate(AICc = str_glue("{`Accuracy AICc`}({`Accuracy AICc_sd`})") ) |> 
+  mutate(CAIF = str_glue("{`Accuracy CAIF`}({`Accuracy CAIF_sd`})") ) |> 
+  mutate(ICOMP = str_glue("{`Accuracy ICOMP`}({`Accuracy ICOMP_sd`})") ) |> 
+  select(-starts_with("Accuracy")) |> 
+  rename(subj=n_subj, 
+         ing = n_ingroup,
+         outg = n_outgroup,
+         model = model_type) 
+  
+
+
+
+```
+
+
+```{r}
+data_simul_all_cases |> colnames()
+```
+
+```{r}
+data_simul_all_cases$`Accuracy CAIF_p_value_HES_SP` |> quantile(probs= seq(0.7, 1, 0.05))
+```
+
+
+```{r}
+ecdf(data_simul_all_cases$`Accuracy CAIF_p_value_HES_SP`)(0.05)
+```
+```{r}
+mean(data_simul_all_cases$`Accuracy CAIF_p_value_HES_SP` > 0.05)
+```
+
+
+
+
+```{r}
+data_simul_all_cases |> 
+ select(n_subj:rho, n, matches("p_value")) |> 
+ select(-ends_with("_SP")) |> 
+ pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="P-Value")  |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_remove("_p_value_HES") |> 
+                     stringr::str_squish()
+         ) |> 
+  select(-ends_with("_sd")) |> 
+  ggplot(aes(x=model_type, y=`P-Value`, fill=`Métrica`)) +
+  geom_boxplot() +
+  xlab("Modelo") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      )
+
+ggsave("graficos_30_05_24/grafico_model_type_p_value.png")
+ggsave("graficos_30_05_24/grafico_model_type_p_value.pdf")
+```
+```{r}
+data_simul_all_cases |> 
+ select(n_subj:rho, n, matches("p_value")) |> 
+ select(-ends_with("HES")) |> 
+ pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="P-Value")  |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_remove("_p_value_HES_SP") |> 
+                     stringr::str_squish()
+         ) |> 
+  select(-ends_with("_sd")) |> 
+  ggplot(aes(x=model_type, y=`P-Value`, fill=`Métrica`)) +
+  geom_boxplot() +
+  xlab("Modelo") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      )
+
+ggsave("graficos_30_05_24/grafico_model_type_p_value_sp.png")
+ggsave("graficos_30_05_24/grafico_model_type_p_value_sp.pdf")
+```
+
+
+
+
+```{r}
+data_simul_all_cases |> 
+  select(-ends_with("_sd")) |> 
+  select(-ends_with("_p_value_HES")) |> 
+  select(-ends_with("_p_value_HES_sp")) |> 
+  pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="Exactitud") |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_squish()) |> 
+  ggplot(aes(x=model_type, y=Exactitud, fill=`Métrica`)) +
+  geom_boxplot() +
+  xlab("Modelo") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      ) + ylab("Porcentaje")
+
+ggsave("graficos_30_05_24/grafico_model_type.png")
+ggsave("graficos_30_05_24/grafico_model_type.pdf")
+```
+
+
+```{r}
+data_simul_all_cases |> 
+  select(-ends_with("_sd")) |> 
+  select(-ends_with("_p_value_HES")) |> 
+  select(-ends_with("_p_value_HES_sp")) |> 
+  pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="Exactitud") |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_squish()) |> 
+  mutate(rho = factor(rho, levels=c("-0.7", "-0.5",  "0",  "0.5",  "0.7"))) |> 
+  ggplot(aes(x=rho, y=Exactitud, fill=`Métrica`)) +
+  geom_boxplot() +
+  xlab(expression(rho)) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      ) + ylab("Porcentaje")
+
+ggsave("graficos_30_05_24/grafico_rho.png")
+ggsave("graficos_30_05_24/grafico_rho.pdf")
+```
+
+
+```{r}
+data_simul_all_cases |> 
+  select(-ends_with("_sd")) |> 
+    select(-ends_with("_p_value_HES")) |> 
+  select(-ends_with("_p_value_HES_sp")) |> 
+  mutate(`Tamaño de muestra` = (n_outgroup + n_ingroup)*n_subj) |>  
+  mutate(var_split = 
+           if_else(`Tamaño de muestra`>=500, "Mayor 500", "Menor 500")  |> 
+           factor(levels=c("Menor 500", "Mayor 500")) 
+         ) |> 
+  mutate(`Tamaño de muestra` = factor(`Tamaño de muestra`)) |> 
+  pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="Exactitud") |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_squish()) |> 
+  ggplot(aes(x=`Tamaño de muestra`, y=Exactitud, fill=`Métrica`)) +
+  geom_boxplot() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  facet_wrap(~var_split, ncol = 1 ,scales = "free_x") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      ) + ylab("Porcentaje")
+
+ggsave("graficos_30_05_24/grafico_sample_size.png", width = 9, height = 6)
+ggsave("graficos_30_05_24/grafico_sample_size.pdf", width = 9, height = 6)
+
+# ggsave("graficos_30_05_24/grafico_sample_size.png", width = 8, height = 11)
+# ggsave("graficos_30_05_24/grafico_sample_size.pdf", width = 8, height = 11)
+```
+
+
+```{r}
+data_simul_all_cases |> 
+  select(-ends_with("_sd")) |> 
+  select(-ends_with("_p_value_HES")) |> 
+  select(-ends_with("_p_value_HES_sp")) |> 
+  mutate(`Tamaño de muestra` = (n_outgroup + n_ingroup)*n_subj) |>  
+  mutate(var_split = 
+           if_else(`Tamaño de muestra`>=500, "Mayor 500", "Menor 500")  |> 
+           factor(levels=c("Menor 500", "Mayor 500")) 
+         ) |> 
+  mutate(`Tamaño de muestra` = factor(`Tamaño de muestra`)) |> 
+  pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="Exactitud") |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_squish()) |> 
+  ggplot(aes(x=`Tamaño de muestra`, y=Exactitud, fill=`Métrica`)) +
+  geom_boxplot() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  # facet_grid(var_split ~ model_type ,space = "free_x", scales="free_x") +
+  facet_wrap( ~ var_split+  model_type ,nrow=2, scales="free_x") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      ) + ylab("Porcentaje")
+
+ggsave("graficos_30_05_24/grafico_sample_size_model_type.png", width = 16, height = 10)
+ggsave("graficos_30_05_24/grafico_sample_size_model_type.pdf", width = 16, height = 10)
+```
+
+
+```{r}
+for(model_name in unique(data_simul_all_cases$model_type)) {
+  
+  data_simul_all_cases |> 
+  filter(model_type == model_name) |> 
+  select(-ends_with("_sd")) |> 
+  select(-ends_with("_p_value_HES")) |> 
+  select(-ends_with("_p_value_HES_sp")) |> 
+  mutate(`Tamaño de muestra` = (n_outgroup + n_ingroup)*n_subj) |>  
+  mutate(var_split = 
+           if_else(`Tamaño de muestra`>=500, "Mayor 500", "Menor 500")  |> 
+           factor(levels=c("Menor 500", "Mayor 500")) 
+         ) |> 
+  mutate(`Tamaño de muestra` = factor(`Tamaño de muestra`)) |> 
+  pivot_longer(starts_with("Accuracy"), names_to = "Métrica", values_to="Exactitud") |> 
+  mutate(`Métrica` = `Métrica` |>
+                     stringr::str_remove("Accuracy") |> 
+                     stringr::str_squish()) |> 
+  ggplot(aes(x=`Tamaño de muestra`, y=Exactitud, fill=`Métrica`)) +
+  geom_boxplot() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette="Pastel2") +
+  # facet_grid(var_split ~ model_type ,space = "free_x", scales="free_x") +
+  facet_wrap( ~ var_split+  model_type ,nrow=2, scales="free_x") +
+  theme_bw() +
+  theme(
+        legend.title = element_text(size=12),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0),
+        # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom",
+        # plot.title = element_text(size=12*2),
+        # strip.text = element_text(size=11*2)
+      ) + ylab("Porcentaje")
+
+  ggsave(str_glue("graficos_30_05_24/grafico_sample_size_model_type_{model_name}.png"))
+  ggsave(str_glue("graficos_30_05_24/grafico_sample_size_model_type_{model_name}.pdf"))
+  
+}
+```
+

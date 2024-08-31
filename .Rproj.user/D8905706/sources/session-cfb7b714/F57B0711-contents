@@ -1,0 +1,82 @@
+---
+title: "respuesta_evaluador_1"
+format: html
+editor: source
+---
+
+```{r}
+library(tidyverse)
+library(lme4)
+library(GLMMadaptive)
+```
+
+
+```{r}
+model_lmer <- lmer(Reaction ~ 1 + Days + (1 + Days | Subject), sleepstudy)
+
+summary(model_lmer)
+```
+
+```{r}
+logLik(model_lmer)
+```
+
+
+```{r}
+# The current version of GLMMadaptive, don't supper normal distribution  
+  temp_fun <- gaussian()
+  temp_fun$variance <-  NULL # this it no needed
+  temp_fun$family <- "gaussian2" # if the name is not change, GLMMadaptive will stop and suggest to use lmer
+  temp_fun$log_dens <- function(y, eta, mu_fun, phis, eta_zi) {
+    
+    
+    scale <- pmax(exp(phis), .Machine$double.eps)
+    
+    m_y <- mu_fun(eta)
+    
+    out <- dnorm(y,m_y,scale,log=TRUE)
+    
+    
+    attr(out, "mu_y") <- m_y
+    
+    return(out)
+    
+  }
+```
+
+
+```{r}
+initial_params_model <- lm(Reaction ~ 1 + Days, data=sleepstudy)
+
+initial_values <- list(
+                  "betas" = coef(initial_params_model),
+                  "D" = diag(2),
+                  "phis" = 0
+                )
+```
+
+
+```{r}
+
+model_adaptative <- model <- GLMMadaptive::mixed_model(
+                              fixed = Reaction ~ 1 + Days, 
+                              random = ~ 1 + Days | Subject, 
+                              data = sleepstudy,
+                              n_phis = 1,
+                              initial_values = initial_values,
+                              family = temp_fun
+                            )
+
+```
+
+
+
+
+```{r}
+model_adaptative
+```
+
+```{r}
+summary(model_adaptative)
+```
+

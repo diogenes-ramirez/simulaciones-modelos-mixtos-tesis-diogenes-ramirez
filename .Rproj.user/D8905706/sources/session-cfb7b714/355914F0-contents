@@ -1,0 +1,59 @@
+---
+title: "run_simulation_lineal"
+format: html
+editor: source
+---
+
+
+```{r}
+library(furrr)
+library(purrr)
+library(progressr)
+
+Sys.setenv("OPENBLAS_NUM_THREADS"="2")
+Sys.getenv("OPENBLAS_NUM_THREADS")
+```
+
+# simulacion un solo hilo
+
+```{r}
+
+source("module_simulation_lineal.R", encoding = "UTF-8")
+
+grid_data = MODULE_SIMULATION_LINEAL$get_simulation_grid()
+
+
+result <- purrr::map_dfr(
+          grid_data, function(x) {
+            MODULE_SIMULATION_LINEAL$run_single_model(x)
+          }, .progress = TRUE)
+
+```
+
+
+```{r}
+source("module_simulation_lineal.R", encoding = "UTF-8")
+
+grid_data = MODULE_SIMULATION_LINEAL$get_simulation_grid()
+cores=29
+plan(multisession, workers = cores)
+
+with_progress({
+  
+  p <- progressor(steps = length(grid_data$m_grid))
+  
+  result <- future_map_dfr(
+            grid_data, ~ {
+              p()
+              MODULE_SIMULATION_LINEAL$run_single_model(.x)
+            },
+             .options = furrr_options(seed=TRUE)
+       
+        
+          )
+})
+
+
+
+```
+

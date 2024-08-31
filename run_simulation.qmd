@@ -1,0 +1,68 @@
+---
+title: "run_simulation"
+format: html
+editor: source
+---
+
+
+
+```{r}
+library(furrr)
+library(purrr)
+library(progressr)
+```
+
+
+# simulacion un solo hilo
+
+```{r}
+source("module_simulation.R", encoding = "UTF-8")
+
+grid_data = MODULE_SIMULATION$get_simulation_grid()
+grid_data$m_vars_data  <-  grid_data$m_vars_data  |>
+                           dplyr::sample_n(nrow(grid_data$m_vars_data))
+
+result <- purrr::map_dfr(
+          grid_data$m_grid, function(x) {
+            MODULE_SIMULATION$run_single_model(x,grid_data$m_vars_data)
+          })
+```
+
+# Simulacion multi hilo
+
+```{r}
+Sys.setenv("OPENBLAS_NUM_THREADS"="2")
+```
+
+```{r}
+Sys.getenv("OPENBLAS_NUM_THREADS")
+```
+
+
+
+
+```{r}
+source("module_simulation.R", encoding = "UTF-8")
+
+grid_data = MODULE_SIMULATION$get_simulation_grid()
+cores=14
+plan(multisession, workers = cores)
+
+with_progress({
+  
+  p <- progressor(steps = length(grid_data$m_grid))
+  
+  result <- future_map_dfr(
+            grid_data$m_grid, ~ {
+              p()
+              MODULE_SIMULATION$run_single_model(.x,grid_data$m_vars_data)
+            },
+             .options = furrr_options(seed=TRUE)
+       
+        
+          )
+})
+
+
+```
+

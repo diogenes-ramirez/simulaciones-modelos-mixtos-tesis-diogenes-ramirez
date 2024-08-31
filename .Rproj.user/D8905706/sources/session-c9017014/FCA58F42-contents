@@ -1,0 +1,367 @@
+MODULE_SIMULATION_LINEAL <- modules::module({
+  
+  import("stats")
+  import("dplyr")
+  import("tidyr")
+  
+  N_REP = 20
+  MODEL_TYPES = c("pois", "logit","guassian")
+  # MODEL_TYPES = c("logit")
+  COEF_VALUE <- 1
+  
+  N_DATA <- c(10, 15, 20, 50, 100, 500)
+  
+  N_VAR_SIMUL <- c(2, 4, 6, 8, 10)
+  N_VAR_NOISE <- N_VAR_SIMUL
+  
+  SD_VARS <- 2
+  MEAN_VARS <- 5
+  
+  SD_RESONSE <- 2
+  
+  
+  my_sim_data <- function(
+    n_data, 
+    n_vars,
+    n_vars_noise,
+    sd_vars,
+    mean_vars,
+    sd_response,
+    coefs,
+    model_type
+  ) {
+    # Generate the real data matrix
+    m_data <- rnorm(n_data * n_vars, mean = mean_vars, sd = sd_vars) |> 
+      matrix(nrow = n_data)
+    
+    # Set column names for the real data
+    colnames(m_data) <- paste0("REAL_", 1:ncol(m_data))
+    
+    # Generate the noise data matrix
+    m_data_noise <- rnorm(n_data * n_vars_noise, mean = mean_vars, sd = sd_vars) |> 
+      matrix(nrow = n_data)
+    
+    # Set column names for the noise data
+    colnames(m_data_noise) <- paste0("NOISE_", 1:ncol(m_data_noise))
+    
+    # Create the design matrix by adding an intercept
+    m_desing_matrix <- cbind(1, m_data)
+    
+    # If only one coefficient is provided, replicate it to match the number of columns
+    if(length(coefs) == 1) {
+      coefs <- rep(coefs, ncol(m_desing_matrix))
+    }
+    
+    # Calculate the linear predictor
+    lineal_pred <- m_desing_matrix %*% coefs
+    
+    # Generate the response variable based on the specified model type
+    if (model_type == "gaussian") {
+      response <- rnorm(n_data, mean = lineal_pred, sd = sd_response)
+    } else if (model_type == "pois") {
+      response <- rpois(n_data, lambda = exp(lineal_pred / 10))
+    } else {
+      response <- rbinom(n_data, size = 1, prob = plogis(lineal_pred / 45))
+    }
+    
+    # Combine real data and noise data into a single data frame
+    m_data <- cbind(m_data, m_data_noise) |> 
+      data.frame()
+    
+    # Add the response variable to the data frame
+    m_data$response <- response
+    
+    # Return the generated data
+    return(m_data)
+  }
+  
+  # Function to fit a Poisson model
+  fit_model_poiss <- function(beta, X, y) {
+    # Calculate the linear predictor
+    lineal_scale <- X %*% beta
+    # Calculate the Poisson estimates
+    est <- exp(lineal_scale)
+    # Calculate the log-likelihood for Poisson
+    log_likheood <- sum(dpois(y, lambda = est, log = TRUE))
+    # Return the negative log-likelihood
+    return(-log_likheood)
+  }
+  
+  # Function to fit a Logistic model
+  fit_model_logit <- function(beta, X, y) {
+    # Calculate the linear predictor
+    lineal_scale <- X %*% beta
+    # Calculate the logistic estimates using the logistic function
+    est <- plogis(lineal_scale)
+    # Calculate the log-likelihood for Logistic
+    log_likheood <- sum(dbinom(y, size = 1, prob = est, log = TRUE))
+    # Return the negative log-likelihood
+    return(-log_likheood)
+  }
+  
+  # Function to fit a Gaussian model
+  fit_model_gaussian <- function(beta, X, y) {
+    # Separate the parameters for the linear predictor and standard deviation
+    beta_params <- beta[1:(length(beta) - 1)]
+    m_sd <- exp(beta[length(beta)])
+    # Calculate the linear predictor
+    lineal_scale <- X %*% beta_params
+    est <- lineal_scale
+    # Calculate the log-likelihood for Gaussian
+    log_likheood <- sum(dnorm(y, mean = est, sd = m_sd, log = TRUE))
+    # Return the negative log-likelihood
+    return(-log_likheood)
+  }
+  
+  
+  model_fun_list <- list(
+    
+    "pois"    = fit_model_poiss,
+    "logit"    = fit_model_logit,
+    "guassian" = fit_model_gaussian
+    
+  )
+  
+  # This function, get_formula_from_vars, takes a vector of input variables and returns a formula object.
+  # If the input vector is empty or has fewer than one element, it sets the input to "1".
+  # It constructs a formula string by concatenating the input variables with a "+" sign, prefixed by a "~".
+  # The constructed formula string is then converted into a formula object using as.formula().
+  # Finally, the function returns this formula object.
+  
+  get_formula_from_vars <- function(input_vars) {
+    
+    if(length(input_vars) < 1) {
+      input_vars <- "1"
+    }
+    
+    base_formula <- paste0("~", paste0(input_vars, collapse="+"))
+    
+    base_formula <- base_formula |> as.formula()
+    
+    return(base_formula)
+  }
+  
+  
+  
+  # Define a function to manually fit a model with specified data, model type, input variables, and response
+  fit_model_manual <- function(data, model_type, input_variables, response) {
+    
+    # Create the design matrix from the input variables
+    m_desing_matrix <- data |> 
+      select(all_of(input_variables))
+    
+    # Generate a formula from the input variables
+    m_formula <- get_formula_from_vars(input_variables)
+    
+    # Create the model matrix using the formula and design matrix
+    m_desing_matrix <- model.matrix(m_formula, m_desing_matrix)
+    
+    # Extract the response variable from the data
+    y = data[[response]]
+    
+    # Initialize the beta coefficients with zeros
+    inital_beta <- rep(0, ncol(m_desing_matrix))
+    
+    # Add an additional zero for Gaussian models
+    if(model_type == "guassian") {
+      inital_beta <- c(inital_beta, 0)
+    }
+    
+    # Get the optimization function based on the model type
+    opt_function <- model_fun_list[[model_type]]
+    
+    # Suppress warnings and messages during optimization
+    suppressWarnings({
+      suppressMessages({ 
+        
+        # Optimize the model to estimate the coefficients
+        est_model <- optim(
+          par = inital_beta,
+          fn = function(beta) {
+            opt_function(beta, m_desing_matrix, y)
+          },
+          hessian = TRUE
+        )
+        
+      })
+    })
+    
+    # Initialize the result as not successful
+    result <- list(ok = FALSE)
+    
+    # Check if the optimization converged
+    if(est_model$convergence == 0) {
+      
+      # Calculate the determinant and trace sum of the Hessian matrix
+      hessian_det <- est_model$hessian |> Matrix::det() |> abs()
+      hessian_trace <- est_model$hessian |> diag() |> abs() |> sum()
+      
+      # Update the result with the computed values
+      result$ok = TRUE
+      result$hessian_det <- hessian_det
+      result$hessian_trace_sum <- hessian_trace
+      result$log_hessian_det <- log(hessian_det)
+      result$n_data = data |> nrow()
+      result$log_like = -est_model$value
+      result$n_param = est_model$hessian |> ncol()
+      result$bic = (-2*result$log_like) + (log(result$n_data)*result$n_param)
+      result$aic = (-2*result$log_like) + (2*result$n_param)
+      result$bic_dio =  result$bic + log(hessian_det)
+      result$diogenes_bic_without_params = (-2*result$log_like) + log(hessian_det)
+      result$caif = result$bic + (2*result$n_param) + log(hessian_det)
+      result$icomp = result$bic - 
+        (log(result$n_data)*result$n_param) + 
+        log(hessian_det) +
+        (result$n_param * log(hessian_trace / result$n_param))
+      result$aicc = result$aic + ((2*result$n_param*(result$n_param+1))/(result$n_data - result$n_param - 1))
+    }
+    
+    # Return the result
+    return(result)
+  }
+  
+  
+  run_single_model <- function(data) {
+    
+    # Simulate data based on the input parameters
+    simul_data <- my_sim_data(
+      n_data = data$n_data, 
+      n_vars = data$n_vars_simul,
+      n_vars_noise = data$n_var_noise,
+      sd_vars = data$sd_vars,
+      mean_vars = data$mean_vars,
+      sd_response = data$sd_response,
+      coefs = data$coefs_value,
+      model_type = data$model_type
+    )
+    
+    result_list <- list()
+    
+    # Iterate over the number of real variables
+    for (n_var_real in 0:data$n_vars_simul) {
+      
+      # Iterate over the number of noise variables
+      for (n_var_noise in 0:data$n_var_noise) {
+        
+        current_vars_real <- NULL
+        current_vars_noise <- NULL
+        
+        # Select the real variables
+        if (n_var_real > 0) {
+          current_vars_real <- colnames(select(simul_data, starts_with("REAL_")))[1:n_var_real]
+        }
+        
+        # Select the noise variables
+        if (n_var_noise > 0) {
+          current_vars_noise <- colnames(select(simul_data, starts_with("NOISE_")))[1:n_var_noise]
+        }
+        
+        # Combine real and noise variables
+        current_model_vars <- c(current_vars_real, current_vars_noise)
+        
+        # Fit the model using the selected variables
+        fitted_model_result <- fit_model_manual(
+          data = simul_data, 
+          model_type = data$model_type, 
+          input_variables = current_model_vars, 
+          response = "response"
+        )
+        
+        # Check if the model fitting was successful
+        if (fitted_model_result$ok) {
+          
+          # Store additional information in the result
+          fitted_model_result$n_var_real = n_var_real
+          fitted_model_result$n_var_noise = n_var_noise
+          fitted_model_result$n_vars_simul = data$n_vars_simul
+          fitted_model_result$sd_vars = data$sd_vars
+          fitted_model_result$mean_vars = data$mean_vars
+          fitted_model_result$sd_response = data$sd_response
+          fitted_model_result$coefs_value = data$coefs_value
+          fitted_model_result$model_type = data$model_type
+          
+          # Add the result to the list
+          result_list[[length(result_list) + 1]] <- fitted_model_result
+          
+        } else {
+          next
+        }
+        
+      }
+      
+    }
+    
+    # Combine the results into a single data frame
+    result_list <- result_list |> bind_rows()
+    
+    # Create a directory for saving results
+    base_dir_name <- "28_05_24_lineal"
+    dir.create(base_dir_name, showWarnings = FALSE, recursive = TRUE)
+    
+    # Save the result list as an RDS file
+    saveRDS(result_list, file.path(base_dir_name, stringr::str_glue("model_{data$grid_idx}.Rds")))
+    
+    return(result_list)
+  }
+  
+  
+  
+  rep_df <- function(df, n_reps, id_var) {
+    
+    result_list <- list()
+    
+    for(i in 1:n_reps) {
+      result_list[[i]] <- df 
+      result_list[[i]][[id_var]] <- i
+    }
+    
+    result_list <- result_list |> bind_rows()
+    
+    return(result_list)
+    
+  }
+  
+  # Define a function to generate a simulation grid with various parameters
+  get_simulation_grid <- function(
+    n_data = N_DATA,         # Number of data points
+    n_vars_simul = N_VAR_SIMUL,   # Number of simulated variables
+    n_var_noise = N_VAR_NOISE,   # Number of noise variables
+    coefs_value = COEF_VALUE,    # Coefficient values for the model
+    model_type = MODEL_TYPES,    # Types of models to simulate
+    reps = N_REP,                # Number of repetitions
+    sd_vars = SD_VARS,           # Standard deviation of variables
+    mean_vars = MEAN_VARS,       # Mean of variables
+    sd_response = SD_RESONSE     # Standard deviation of the response variable
+  ) {
+    
+    # Create a grid of all combinations of the provided parameters
+    m_grid <- expand.grid(
+      n_data = n_data,
+      n_vars_simul = n_vars_simul,
+      n_var_noise = n_var_noise,
+      coefs_value = coefs_value,
+      model_type = model_type,
+      reps = reps,
+      sd_vars = sd_vars,
+      mean_vars = mean_vars,
+      sd_response = sd_response
+    ) |> 
+      # Convert the grid to a data frame
+      data.frame() |> 
+      # Convert model_type to character
+      mutate(model_type = model_type |> as.character()) |>
+      # Replicate the data frame based on the number of repetitions, adding a rep_id column
+      rep_df(reps, id_var="rep_id") |>   
+      # Add a grid index to each row
+      mutate(grid_idx = 1:n()) |> 
+      # Randomly shuffle the rows
+      sample_n(n()) |> 
+      # Transpose the data frame using purrr::transpose()
+      purrr::transpose() 
+    
+    # Return the generated grid
+    return(m_grid)
+  }
+  
+  
+})
